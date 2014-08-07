@@ -1,6 +1,7 @@
 import RPi.GPIO as GPIO
 import time
 import textwrap
+from threading import Thread
 
 # Define GPIO to LCD mapping
 LCD_RS = 27
@@ -75,6 +76,9 @@ class LCD_Display(object):
     lines = LCD_LINES
     cols = LCD_WIDTH
 
+    _scroll_thread = None
+    _scroll_go = False
+
     def init(self):
         GPIO.setmode(GPIO.BCM)
 
@@ -106,29 +110,32 @@ class LCD_Display(object):
         self._send_cmd(LCD_CLEAR_DISPLAY)  # command to clear display
         time.sleep(0.003)
 
-    def scroll_message(self, string):
+    def scroll_message(self, string, scroll_delay=1.5, skip_lines=LCD_LINES):
+        """ Start scrolling a message.
+                string - string to display, which will be wrapped into lines
+                scroll_delay - number of seconds between scrolls
+                skip_lines - how many lines we skip through on each scroll (e.g. set to 1 to scroll up one line at a time)
+            Call stop_scroll() to terminate scrolling """
+
         # Format the string into lines first
         string_lines = textwrap.wrap(string, LCD_WIDTH)
-        current_first_line = 0
 
-        while True:
-            print "Line {0}: {1}".format(current_first_line, string_lines[current_first_line])
-            # Update first line
-            self._send_cmd(LCD_LINE_1)
-            self._send_line(string_lines[current_first_line])
+        # If the message is short enough to display whole, just do it
+        if len(string_lines) <= LCD_LINES:
+            self.message("\n".join(string_lines))
+            return
 
-            # Update second line
-            self._send_cmd(LCD_LINE_2)
-            if current_first_line < len(string_lines) - 1:
-                self._send_line(string_lines[current_first_line + 1])
-            else:
-                self._send_line("")
+        # Start a thread that does the work of scrolling this message vertically
+        self._scroll_thread = Thread(target=self._scroll_worker, args=(string_lines, scroll_delay, skip_lines))
+        self._scroll_thread.setDaemon(True)
+        self._scroll_thread.start()
 
-            current_first_line = (current_first_line + 1) % len(string_lines)
-
-            time.sleep(1.5)
+    def stop_scroll(self):
+        """ Stop a currently scrolling message """
+        self._scroll_go = False
 
     def message(self, string):
+        """ Display a static message """
         # Start on first line
         self._send_cmd(LCD_LINE_1)
         for char in string:
@@ -183,11 +190,37 @@ class LCD_Display(object):
         GPIO.output(self.e, False)
         time.sleep(E_DELAY)
 
+    def _scroll_worker(self, string_lines, scroll_delay, skip_lines):
+        assert(not self._scroll_go)
+
+        self._scroll_go = True
+        current_first_line = 0
+        while self._scroll_go:
+            print "Line {0}: {1}".format(current_first_line, string_lines[current_first_line])
+            # Update first line
+            self._send_cmd(LCD_LINE_1)
+            self._send_line(string_lines[current_first_line])
+
+            # Update second line
+            self._send_cmd(LCD_LINE_2)
+            if current_first_line < len(string_lines) - 1:
+                self._send_line(string_lines[current_first_line + 1])
+            else:
+                self._send_line("")
+
+            current_first_line = (current_first_line + skip_lines) % len(string_lines)
+
+            time.sleep(scroll_delay)
+
 if __name__ == '__main__':
     try:
         display = LCD_Display()
         display.init()
         display.scroll_message("here's quite a long string, I wonder if this will be more than enough to fill the display")
+        time.sleep(15)
+        display.stop_scroll()
+        display.clear()
+        display.message("Done")
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
